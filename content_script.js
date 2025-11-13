@@ -8,8 +8,88 @@
     // Toggle functions will be defined when UI is created
     let switchToFindMode;
     let switchToChatMode;
-    // Get DeepSeek API key from global config loaded in config.js
-    const DEEPSEEK_API_KEY = window.DEEPSEEK_API_KEY;
+    
+    // Settings storage
+    let settings = {
+        apiKey: "",
+        model: "openai/gpt-4o-mini",
+        modelsCache: null,
+        modelsCacheTime: null
+    };
+
+    // Chrome Storage API functions
+    const loadSettings = async () => {
+        try {
+            const result = await chrome.storage.local.get(["apiKey", "model", "modelsCache", "modelsCacheTime"]);
+            if (result.apiKey !== undefined) settings.apiKey = result.apiKey;
+            if (result.model !== undefined) settings.model = result.model;
+            if (result.modelsCache !== undefined) settings.modelsCache = result.modelsCache;
+            if (result.modelsCacheTime !== undefined) settings.modelsCacheTime = result.modelsCacheTime;
+        } catch (error) {
+            console.error("Error loading settings:", error);
+        }
+    };
+
+    const saveSettings = async () => {
+        try {
+            await chrome.storage.local.set({
+                apiKey: settings.apiKey,
+                model: settings.model,
+                modelsCache: settings.modelsCache,
+                modelsCacheTime: settings.modelsCacheTime
+            });
+        } catch (error) {
+            console.error("Error saving settings:", error);
+        }
+    };
+
+    // Fetch models from OpenRouter API
+    const fetchModels = async (forceRefresh = false) => {
+        const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+        
+        // Check cache first
+        if (!forceRefresh && settings.modelsCache && settings.modelsCacheTime) {
+            const cacheAge = Date.now() - settings.modelsCacheTime;
+            if (cacheAge < CACHE_DURATION) {
+                return settings.modelsCache;
+            }
+        }
+
+        try {
+            const response = await fetch("https://openrouter.ai/api/v1/models", {
+                method: "GET",
+                headers: {
+                    "Content-Type": "application/json"
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to fetch models: ${response.status}`);
+            }
+
+            const data = await response.json();
+            const models = data.data || [];
+            
+            // Cache the models
+            settings.modelsCache = models;
+            settings.modelsCacheTime = Date.now();
+            await saveSettings();
+            
+            return models;
+        } catch (error) {
+            console.error("Error fetching models:", error);
+            // Return fallback models if API call fails
+            return [
+                { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
+                { id: "openai/gpt-4o", name: "GPT-4o" },
+                { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
+                { id: "anthropic/claude-3-haiku", name: "Claude 3 Haiku" },
+                { id: "google/gemini-pro-1.5", name: "Gemini Pro 1.5" },
+                { id: "meta-llama/llama-3.1-70b-instruct", name: "Llama 3.1 70B" },
+                { id: "deepseek/deepseek-chat", name: "DeepSeek Chat" }
+            ];
+        }
+    };
 
     // Enhanced Markdown parser
     const parseMarkdown = (text) => {
@@ -138,7 +218,7 @@
     };
 
     // Ctrl+F to open the finder
-    document.addEventListener("keydown", (e) => {
+    document.addEventListener("keydown", async (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "f") {
             e.preventDefault();
             ui = document.getElementById("myFindBar");
@@ -149,14 +229,46 @@
                 container.innerHTML = `
                     <div id="findBarContent">
                         <div id="findInputWrapper">
-                            <input id="findInput" type="text" placeholder="Find...">
+                            <input id="findInput" type="text" placeholder="Find..." autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore="true">
                         </div>
                         <span id="findStatus"></span>
                         <button id="askButton" style="display: none;">Ask</button>
                         <div id="buttonGroup">
+                            <button id="settingsButton" title="Settings">⚙</button>
                             <button id="findPrev">↑</button>
                             <button id="findNext">↓</button>
                             <button id="findClose">✕</button>
+                        </div>
+                    </div>
+                    <div id="settingsPanel" style="display: none;">
+                        <div id="settingsHeader">
+                            <h3 style="margin: 0; font-size: 14px; font-weight: 600;">Settings</h3>
+                            <button id="settingsCloseButton">✕</button>
+                        </div>
+                        <div id="settingsContent">
+                            <div class="settings-field">
+                                <label for="apiKeyInput">OpenRouter API Key:</label>
+                                <input id="apiKeyInput" type="password" placeholder="sk-or-v1-..." autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore="true">
+                                <small style="color: #aaa; font-size: 11px; display: block; margin-top: 4px;">
+                                    Get your API key from <a href="https://openrouter.ai/keys" target="_blank" style="color: #4a9eff;">openrouter.ai</a>
+                                </small>
+                            </div>
+                            <div class="settings-field">
+                                <label for="modelSelect">Model:</label>
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    <select id="modelSelect" style="flex: 1;">
+                                        <option value="">Loading models...</option>
+                                    </select>
+                                    <button id="refreshModelsButton" title="Refresh models">🔄</button>
+                                </div>
+                                <div id="modelLoadingStatus" style="display: none; color: #aaa; font-size: 11px; margin-top: 4px;">Loading models...</div>
+                            </div>
+                            <div class="settings-actions">
+                                <button id="testApiKeyButton">Test API Key</button>
+                                <button id="saveSettingsButton">Save</button>
+                                <button id="cancelSettingsButton">Cancel</button>
+                            </div>
+                            <div id="settingsMessage" style="display: none; margin-top: 8px; padding: 6px; border-radius: 4px; font-size: 12px;"></div>
                         </div>
                     </div>
                     <div id="chatContainer" style="display: none;">
@@ -168,7 +280,7 @@
                         <div id="pageReadMessage" style="display: none;"></div>
                         <div id="chatInputArea">
                             <div id="chatInputWrapper">
-                                <input id="chatInput" type="text" placeholder="Type your message...">
+                                <input id="chatInput" type="text" placeholder="Type your message..." autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore="true">
                                 <button id="chatSendButton">Ask</button>
                             </div>
                         </div>
@@ -183,6 +295,17 @@
                 const askButton = container.querySelector("#askButton");
                 const findPrev = container.querySelector("#findPrev");
                 const findNext = container.querySelector("#findNext");
+                const settingsButton = container.querySelector("#settingsButton");
+                const settingsPanel = container.querySelector("#settingsPanel");
+                const settingsCloseButton = container.querySelector("#settingsCloseButton");
+                const apiKeyInput = container.querySelector("#apiKeyInput");
+                const modelSelect = container.querySelector("#modelSelect");
+                const refreshModelsButton = container.querySelector("#refreshModelsButton");
+                const modelLoadingStatus = container.querySelector("#modelLoadingStatus");
+                const testApiKeyButton = container.querySelector("#testApiKeyButton");
+                const saveSettingsButton = container.querySelector("#saveSettingsButton");
+                const cancelSettingsButton = container.querySelector("#cancelSettingsButton");
+                const settingsMessage = container.querySelector("#settingsMessage");
                 const chatContainer = container.querySelector("#chatContainer");
                 const chatMessages = container.querySelector("#chatMessages");
                 const pageReadMessage = container.querySelector("#pageReadMessage");
@@ -190,6 +313,148 @@
                 const chatSendButton = container.querySelector("#chatSendButton");
                 const backToFindButton = container.querySelector("#backToFindButton");
                 const chatCloseButton = container.querySelector("#chatCloseButton");
+
+                // Load settings and populate UI
+                await loadSettings();
+                apiKeyInput.value = settings.apiKey;
+                
+                // Populate model dropdown
+                const populateModels = async (forceRefresh = false) => {
+                    modelLoadingStatus.style.display = "block";
+                    modelSelect.disabled = true;
+                    try {
+                        const models = await fetchModels(forceRefresh);
+                        modelSelect.innerHTML = "";
+                        
+                        if (models.length === 0) {
+                            modelSelect.innerHTML = '<option value="">No models available</option>';
+                            return;
+                        }
+                        
+                        models.forEach(model => {
+                            const option = document.createElement("option");
+                            const modelId = model.id || model.name || model.model || "";
+                            option.value = modelId;
+                            // Use name if available, otherwise use id, fallback to model field
+                            const displayName = model.name || model.id || model.model || modelId;
+                            option.textContent = displayName;
+                            if (modelId === settings.model) {
+                                option.selected = true;
+                            }
+                            modelSelect.appendChild(option);
+                        });
+                    } catch (error) {
+                        console.error("Error populating models:", error);
+                        modelSelect.innerHTML = '<option value="">Error loading models</option>';
+                    } finally {
+                        modelLoadingStatus.style.display = "none";
+                        modelSelect.disabled = false;
+                    }
+                };
+                
+                await populateModels();
+
+                // Settings panel handlers
+                const showSettings = () => {
+                    findBarContent.style.display = "none";
+                    chatContainer.style.display = "none";
+                    settingsPanel.style.display = "block";
+                    apiKeyInput.value = settings.apiKey;
+                    settingsMessage.style.display = "none";
+                };
+
+                const hideSettings = () => {
+                    settingsPanel.style.display = "none";
+                    if (isChatMode) {
+                        chatContainer.style.display = "block";
+                    } else {
+                        findBarContent.style.display = "flex";
+                    }
+                };
+
+                const showSettingsMessage = (message, isError = false) => {
+                    settingsMessage.textContent = message;
+                    settingsMessage.style.display = "block";
+                    settingsMessage.style.background = isError ? "rgba(255, 0, 0, 0.2)" : "rgba(0, 255, 0, 0.2)";
+                    settingsMessage.style.color = isError ? "#ff6b6b" : "#51cf66";
+                    setTimeout(() => {
+                        settingsMessage.style.display = "none";
+                    }, 5000);
+                };
+
+                settingsButton.addEventListener("click", showSettings);
+                settingsCloseButton.addEventListener("click", hideSettings);
+                cancelSettingsButton.addEventListener("click", hideSettings);
+
+                refreshModelsButton.addEventListener("click", async () => {
+                    refreshModelsButton.disabled = true;
+                    refreshModelsButton.textContent = "⏳";
+                    await populateModels(true);
+                    refreshModelsButton.disabled = false;
+                    refreshModelsButton.textContent = "🔄";
+                    showSettingsMessage("Models refreshed", false);
+                });
+
+                testApiKeyButton.addEventListener("click", async () => {
+                    const testKey = apiKeyInput.value.trim();
+                    if (!testKey) {
+                        showSettingsMessage("Please enter an API key first", true);
+                        return;
+                    }
+
+                    testApiKeyButton.disabled = true;
+                    testApiKeyButton.textContent = "Testing...";
+                    
+                    try {
+                        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Authorization": `Bearer ${testKey}`
+                            },
+                            body: JSON.stringify({
+                                model: modelSelect.value || "openai/gpt-4o-mini",
+                                messages: [{ role: "user", content: "test" }],
+                                max_tokens: 5
+                            })
+                        });
+
+                        if (response.ok) {
+                            showSettingsMessage("API key is valid!", false);
+                        } else {
+                            const errorData = await response.json();
+                            showSettingsMessage(`API key test failed: ${errorData.error?.message || response.statusText}`, true);
+                        }
+                    } catch (error) {
+                        showSettingsMessage(`Error testing API key: ${error.message}`, true);
+                    } finally {
+                        testApiKeyButton.disabled = false;
+                        testApiKeyButton.textContent = "Test API Key";
+                    }
+                });
+
+                saveSettingsButton.addEventListener("click", async () => {
+                    const newApiKey = apiKeyInput.value.trim();
+                    const newModel = modelSelect.value;
+
+                    if (!newApiKey) {
+                        showSettingsMessage("Please enter an API key", true);
+                        return;
+                    }
+
+                    if (!newModel) {
+                        showSettingsMessage("Please select a model", true);
+                        return;
+                    }
+
+                    settings.apiKey = newApiKey;
+                    settings.model = newModel;
+                    await saveSettings();
+                    showSettingsMessage("Settings saved!", false);
+                    setTimeout(() => {
+                        hideSettings();
+                    }, 1000);
+                });
 
                 let matches = [];
                 let currentIndex = 0;
@@ -379,8 +644,41 @@
                     }, 300);
                 };
 
-                const askDeepSeek = async (query) => {
+                const askOpenRouter = async (query) => {
                     if (isRequestInProgress) return;
+
+                    // Ensure settings are loaded
+                    await loadSettings();
+
+                    // Check if API key is configured
+                    if (!settings.apiKey || settings.apiKey.trim() === "") {
+                        const errorMessage = document.createElement("div");
+                        errorMessage.className = "chat-message assistant-message fade-in";
+                        errorMessage.innerHTML = parseMarkdown(`**Configuration Required**\n\nPlease configure your OpenRouter API key in the settings (⚙ button).\n\nGet your API key from [openrouter.ai](https://openrouter.ai/keys)`);
+                        if (!isChatMode) {
+                            switchToChatMode(query);
+                            chatMessages.appendChild(errorMessage);
+                        } else {
+                            chatMessages.appendChild(errorMessage);
+                        }
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                        return;
+                    }
+
+                    // Check if model is selected
+                    if (!settings.model || settings.model.trim() === "") {
+                        const errorMessage = document.createElement("div");
+                        errorMessage.className = "chat-message assistant-message fade-in";
+                        errorMessage.innerHTML = parseMarkdown(`**Configuration Required**\n\nPlease select a model in the settings (⚙ button).`);
+                        if (!isChatMode) {
+                            switchToChatMode(query);
+                            chatMessages.appendChild(errorMessage);
+                        } else {
+                            chatMessages.appendChild(errorMessage);
+                        }
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                        return;
+                    }
 
                     isRequestInProgress = true;
                     abortController = new AbortController();
@@ -415,10 +713,6 @@
                     }
 
                     try {
-                        if (!DEEPSEEK_API_KEY || DEEPSEEK_API_KEY === "your_actual_api_key_here") {
-                            throw new Error("Invalid DeepSeek API key. Please update the DEEPSEEK_API_KEY in content_script.js.");
-                        }
-
                         if (conversationHistory.length > 10) {
                             conversationHistory = conversationHistory.slice(-10);
                         }
@@ -471,14 +765,16 @@ ${pageContext.pageText}`;
                             messages = [formatReminder, ...conversationHistory];
                         }
 
-                        const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+                        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
-                                "Authorization": `Bearer ${DEEPSEEK_API_KEY}`
+                                "Authorization": `Bearer ${settings.apiKey}`,
+                                "HTTP-Referer": window.location.href,
+                                "X-Title": document.title || "FindAI Extension"
                             },
                             body: JSON.stringify({
-                                model: "deepseek-chat",
+                                model: settings.model,
                                 messages: messages,
                                 max_tokens: 800,
                                 stream: true
@@ -488,10 +784,23 @@ ${pageContext.pageText}`;
 
                         if (!response.ok) {
                             const errorText = await response.text();
-                            if (response.status === 429) {
-                                throw new Error("Rate limit exceeded. Please try again later.");
+                            let errorMessage = `HTTP error! status: ${response.status}`;
+                            
+                            try {
+                                const errorData = JSON.parse(errorText);
+                                errorMessage = errorData.error?.message || errorMessage;
+                            } catch (e) {
+                                errorMessage = errorText || errorMessage;
                             }
-                            throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+
+                            if (response.status === 401) {
+                                throw new Error("Invalid API key. Please check your OpenRouter API key in settings.");
+                            } else if (response.status === 429) {
+                                throw new Error("Rate limit exceeded. Please try again later.");
+                            } else if (response.status === 404) {
+                                throw new Error(`Model "${settings.model}" not found. Please select a different model in settings.`);
+                            }
+                            throw new Error(errorMessage);
                         }
 
                         if (pageContext.totalTokens > 500) {
@@ -558,10 +867,10 @@ ${pageContext.pageText}`;
                         if (error.name === "AbortError") {
                             console.log("Request canceled by user");
                         } else {
-                            console.error("Error with DeepSeek API:", error);
+                            console.error("Error with OpenRouter API:", error);
                             const errorMessage = document.createElement("div");
                             errorMessage.className = "chat-message assistant-message fade-in";
-                            errorMessage.innerHTML = parseMarkdown(`Error: ${error.message}`);
+                            errorMessage.innerHTML = parseMarkdown(`**Error:** ${error.message}\n\nIf this persists, check your API key and model selection in settings (⚙ button).`);
                             chatMessages.appendChild(errorMessage);
                             errorMessage.scrollIntoView({ behavior: "smooth", block: "start" });
                         }
@@ -571,7 +880,7 @@ ${pageContext.pageText}`;
                         abortController = null;
                         const chatInputArea = container.querySelector("#chatInputArea");
                         chatInputArea.style.display = "flex";
-                        chatInputArea.style.animation = "slideInUp 0.4s ease-out";
+                        chatInputArea.style.animation = "slideInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1)";
 
                         // Remove animation after it completes to allow re-triggering
                         setTimeout(() => {
@@ -590,7 +899,7 @@ ${pageContext.pageText}`;
                     if (findInput.value.trim().length > 0 && !isRequestInProgress) {
                         askButton.classList.add("loading");
                         askButton.textContent = "...";
-                        askDeepSeek(findInput.value);
+                        askOpenRouter(findInput.value);
                     }
                 });
 
@@ -599,7 +908,7 @@ ${pageContext.pageText}`;
                         e.preventDefault();
                         askButton.classList.add("loading");
                         askButton.textContent = "...";
-                        askDeepSeek(findInput.value);
+                        askOpenRouter(findInput.value);
                     }
                 });
 
@@ -607,7 +916,7 @@ ${pageContext.pageText}`;
                     if (chatInput.value.trim().length > 0 && !isRequestInProgress) {
                         chatSendButton.classList.add("loading");
                         chatSendButton.textContent = "...";
-                        askDeepSeek(chatInput.value);
+                        askOpenRouter(chatInput.value);
                         chatInput.value = "";
                     }
                 });
@@ -617,7 +926,7 @@ ${pageContext.pageText}`;
                         e.preventDefault();
                         chatSendButton.classList.add("loading");
                         chatSendButton.textContent = "...";
-                        askDeepSeek(chatInput.value);
+                        askOpenRouter(chatInput.value);
                         chatInput.value = "";
                     }
                 });
@@ -746,22 +1055,26 @@ ${pageContext.pageText}`;
                 }
             }
 
-            if (ui.style.display === "none" || !ui.style.display) {
+            if (ui && (ui.style.display === "none" || !ui.style.display)) {
                 ui.style.display = "flex";
                 ui.classList.remove("slide-up", "slide-down");
                 // Force a reflow to ensure the element is in its initial state
                 void ui.offsetHeight;
                 // Then immediately add the slide-down class to trigger animation
                 requestAnimationFrame(() => {
-                    ui.classList.add("slide-down");
+                    if (ui) {
+                        ui.classList.add("slide-down");
+                        const findInput = ui.querySelector("#findInput");
+                        if (findInput) findInput.focus();
+                    }
                 });
-
-                ui.querySelector("#findInput").focus();
-            } else {
+            } else if (ui) {
                 ui.classList.remove("slide-down");
                 ui.classList.add("slide-up");
                 setTimeout(() => {
-                    ui.style.display = "none";
+                    if (ui && ui.parentNode) {
+                        ui.style.display = "none";
+                    }
                 }, 300);
             }
         }
@@ -773,7 +1086,9 @@ ${pageContext.pageText}`;
                 ui.classList.remove("slide-down");
                 ui.classList.add("slide-up");
                 setTimeout(() => {
-                    ui.style.display = "none";
+                    if (ui && ui.parentNode) {
+                        ui.style.display = "none";
+                    }
                 }, 300);
             }
         }
