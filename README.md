@@ -1,6 +1,6 @@
-# FindAI
+# Glimpse
 
-AI-powered find-in-page Chrome extension with OpenRouter integration.
+AI-powered find-in-page Chrome extension with liquid glass UI. Get instant insights about any webpage.
 
 ## Quick Start
 
