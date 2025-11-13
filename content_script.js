@@ -771,7 +771,7 @@ ${pageContext.pageText}`;
                                 "Content-Type": "application/json",
                                 "Authorization": `Bearer ${settings.apiKey}`,
                                 "HTTP-Referer": window.location.href,
-                                "X-Title": document.title || "FindAI Extension"
+                                "X-Title": document.title || "Glimpse Extension"
                             },
                             body: JSON.stringify({
                                 model: settings.model,
